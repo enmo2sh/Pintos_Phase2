@@ -1,0 +1,554 @@
+        	+----------------------------------+
+        	|    	CS 140  	        |
+        	| PROJECT 1: THREADS   |
+        	|   DESIGN DOCUMENT    |
+        	+----------------------------------+
+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+Afnan Mousaa       <afnanmous99@gmail.com>           -15-
+Enas Morsy         <enasmorsy99@gmail.com>           -20-
+Sara Mohamed       <saramoyoussef@gmail.com>         -31-
+Shimaa Kamal       <shimaakamal208@gmail.com>        -34-    
+
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+
+
+
+             	ALARM CLOCK
+             	===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+ 1- int64_t sleeping_ticks    -------local variable in “struct thread“
+    to store the number of ticks to sleep.
+
+ 2- struct list sleeping_list ------- list of threads  in ”timer.c“
+    when timer_sleep is called, the thread is added to this list.
+
+
+
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+-When “timer_sleep(ticks) “is called, ”sleep_thread(ticks)“ is called.
+ 1-checks if the number of tricks is bigger than zero , 
+ 2-sets the thread‘s sleeping_ticks equals the parameter ticks plus
+   the ticks since the os is booted using “thread_ticks()” , 
+ 3-inserts the thread in the sleeping list and blocks the thread.
+
+
+-When “timer_interrupt() “is called and by each tick ,”wake_thread() “is called.  
+ 1-Loop until sleeping_list is empty .
+ 2-gets the front thread of the sleeping list.
+ 3-if the sleeping_ticks of this front element is bigger than ticks , breaks the loop.
+ 4-Otherwise removes the thread from sleeping_list and unblocks it .
+
+
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+1-insert in a sleeping list with ascending order according to the number of ticks
+  for each thread using” compare_ticks() “ in “timer.c” . 
+2-By each tick, iterate over the sleeping list from front 
+  and if the thread’s sleeping_ticks is still bigger than the ticks it breaks the loop .
+so it minimizes the time spent in the timer interrupt handler looping in sleeping_list.
+
+
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+The race condition is avoided by using disable of the interrupt in the function
+“sleep_thread(ticks)” . 
+ 1-it makes “intr_disable ()” .
+ 2-inserts the current thread in the sleeping list and blocks it .
+ 3-enables the interrupt by calling the function  “intr_set_level” .
+so if thread can be inserted in the sleeping list and other threads wait to enter the critical section
+one by one, two threads can’t access this critical section at the same time.   
+
+
+
+
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+The race condition is avoided by using disable interrupt  in the function “timer_interrupt()”.
+ 1-it makes “intr_disable ()” .
+ 2-Wake up the threads if they finished their sleeping_ticks .
+ 3-enables the interrupt by calling the function  “intr_set_level” .
+So only one thread can access the “ wake_thread() “ and the sleeping_list.
+
+
+
+
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+We used this design to avoid busy_waiting in the last implementation by using list to store the sleeping threads
+and block them until their sleeping_ticks are finished.
+As when the current thread sleeps, it doesn't affect the cpu, another thread is freely running on it.  
+Also This implementation is used to minimize the amount of time in the timer_interrupt()
+By inserting in order in the sleeping_list so in each tick it wakes only the threads
+whose sleeping_ticks are finished and once thread is still sleeping, breaks the looping on the rest
+because for sure they are still sleeping as they are sorted in an ascending order  .
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+		PRIORITY SCHEDULING
+         	===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+1-int max_priority ------ struct member in “struct semaphore”
+ -Saves the highest thread priority waiting for this lock
+ -Used to handle priority donation where lock holder priority is updated only if it is smaller than this value
+
+2-int actual_priority ------ struct member in “struct thread”
+ -Saves thread actual priority which is different from its current priority in case of priority donation
+ -Used to replace donated priority after releasing locks with higher priority than the actual.
+
+3-struct list_elem elem ------ struct member in “struct lock”
+ -Used to build “lock_list” for each thread
+
+4-struct list lock_list ------ struct member in “struct thread”
+ -Saves locks held by this thread in descending order according to their priority “max_priority”
+ -Used to handle priority donation
+
+5-struct lock* waiting_lock ------ struct member in “struct thread”
+ -Saves the lock  which this thread is blocked on, if existed.
+ -Used to handle nested donation to trace all threads affected by new lock_acquire request and update their priority.
+
+
+
+
+
+
+
+
+
+
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+
+We implement nested donation using 4 members:
+1-priority which refers to the last priority given to the thread,
+2-actual priority which refers to the priority given to the thread once it created,
+3-waiting_lock which is the lock that the thread blocked on it
+4-and finally the lock_list that contains the locks held by the thread.
+
+In case of nested donation, we begin from the seeking thread to the holder one and reset
+its priority to the priority of the seeking one. And then from the holder, we check if it is blocked on
+another lock, if so, we recursively move to the holder of that lock and do the same steps ending
+with a thread that isn’t blocked on any lock.
+
+Example:
+We have 3 threads A, B, C. with priorities 20, 40, 63 respectively. Thread A holds lock L1, Thread B holds lock L2.
+Thread B acquired lock L1 & thread C acquire lock L2 (which is held by B that is blocked on lock L1).
+ .----------------------------------------------------------------------------.
+ |                              Thread A                                      |
+ +------------------------+--------------------------=------------------------+
+ |         member         |                    value                          |
+ +------------------------+---------------------------------------------------+
+ |  priority              |                      20                           |
+ |  actual_priority       |                      20                           |
+ |  waiting_lock          |                       _                           |
+ |  lock_list             |           {L1 with max_priorit = 40}              |                           
+ '------------------------+-------------------------------------------------- ' 
+
+
+
+
+ .-----------------------------------------------------------------------------.
+ |                              Thread B                                       |
+ +------------------------+----------------------------------------------------+
+ |         member         |                     value                          |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                      40                            |
+ |  actual_priority       |                      40                            |
+ |  waiting_lock          |                      L1                            |
+ |  lock_list             |           {L2 with max_priorit = 63}               |                           
+ '------------------------+----------------------------------------------------'  
+
+
+ .-----------------------------------------------------------------------------.
+ |                             Thread C                                        |
+ +------------------------+----------------------------------------------------+
+ |         member         |                     value                          |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                      63                            |
+ |  actual_priority       |                      63                            |
+ |  waiting_lock          |                      L2                            |
+ |  lock_list             |                      {}                            |                           
+ '------------------------+----------------------------------------------------' 
+___________________________________________________________________________
+
+
+
+
+Then , Thread C donates its priority to thread B
+ .-----------------------------------------------------------------------------.
+ |                              Thread B                                       |
+ +------------------------+----------------------------------------------------+
+ |         member         |                      value                         |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                       63                           |
+ |  actual_priority       |                       40                           |
+ |  waiting_lock          |                       L1                           |
+ |  lock_list             |         {L2 with max_priorit = 63}                 |                           
+ '------------------------+----------------------------------------------------'
+So thread B will now have the higher priority also, so it will try to run but it still block on lock L1 which
+ has a lower priority, so it will also donate its priority to thread A to release L1. 
+
+
+___________________________________________________________________________
+Then, Thread B donates its priority to thread A
+ .-----------------------------------------------------------------------------.
+ |                               Thread A                                      |
+ +------------------------+----------------------------------------------------+
+ |         member         |                     value                          |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                      63                            |
+ |  actual_priority       |                      20                            |
+ |  waiting_lock          |                      _                             |
+ |  lock_list             |           {L1 with max_priorit = 63}               |                           
+ '------------------------+----------------------------------------------------' 
+Now thread A has the highest priority, so when thread yield, thread A will be chosen
+to be the running thread and release lock L1 to thread B.
+So :
+ .-----------------------------------------------------------------------------.
+ |                               Thread A                                      |
+ +------------------------+----------------------------------------------------+
+ |         member         |                     value                          |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                      20                            |
+ |  actual_priority       |                      20                            |
+ |  waiting_lock          |                      _                             |
+ |  lock_list             |                      {}                            |                           
+ '------------------------+----------------------------------------------------'
+
+
+
+
+
+Now thread B has the highest priority, so when thread yield, thread B will be chosen
+to be the running thread and release lock L2 to thread C.
+So :
+ .-----------------------------------------------------------------------------.
+ |                              Thread B                                       |
+ +------------------------+----------------------------------------------------+
+ |         member         |                     value                          |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                       40                           |
+ |  actual_priority       |                       40                           |
+ |  waiting_lock          |                        _                           |
+ |  lock_list             |                       {}                           |                           
+ '------------------------+----------------------------------------------------'
+
+Now, thread C can acquire L2 and be the running thread
+ .-----------------------------------------------------------------------------.
+ |                               Thread C                                      |
+ +------------------------+----------------------------------------------------+
+ |         member         |                     value                          |
+ +------------------------+----------------------------------------------------+
+ |  priority              |                       63                           |
+ |  actual_priority       |                       63                           |
+ |  waiting_lock          |                        _                           |
+ |  lock_list             |                       {}                           |
+ '------------------------+----------------------------------------------------' 
+
+
+
+
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+By inserting waiting threads in order according to their priority into semaphore list waiters,
+then when the lock, semaphore, or condition is available the first element in the list -that has
+the highest priority- is popped first to have it.
+
+
+
+
+
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+
+1-This acquired lock is set to be the current thread “waiting_lock”
+2-If acquired lock holder has a smaller priority than current thread -requesting this lock- current thread priority
+ is donated to holder priority, this lock semaphore “max_priority” also is set to donated priority
+3-“Lock_list” that is held by lock holder thread is sorted again after this change to have locks in
+ descending order according to their semaphore “max_priority”
+4-To handle nested donation; previous two steps are repeated recursively to “waiting_lock holder” -if existed- that
+is the thread having the lock on which required lock holder blocked, comparing its priority to the donated one
+and deciding proper action; if it is smaller it will be updated otherwise donated priority transition ends, recursion stops.
+	
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+
+1-This lock is removed from current_thread “lock_list”
+2-Current thread priority was donated by waiting a higher-priority thread, so to reset its priority to 
+ the highest priority lock in “lock_list” -if existed- which is the first element in the list is compared to the actual priority
+ of the thread, virtual priority is set to be the highest value of them.
+3-Current thread is removed from this lock semaphore “waiters list”, and the highest-priority
+ thread in “waiters list” is unblocked then gets the lock.
+
+
+
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+A potential race may occur if more than one thread tries to set the priority of the current thread.
+This may happen in case of priority donation when the thread with higher priority wants to donate its priority
+to the holder thread, while the holder itself reset its priority. Then The final value of the priority will be equal to
+the priority of the last thread that sets the priority. So that may lead to different results.
+We avoid this race condition by disable the interrupt before this critical section and then enable it again after this section.
+According to our implementation, we can’t use locks in this situation.
+
+
+
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+As we let the ready list be ordered in inserting and always be sorted even if a thread changes its priority for some reason,
+this enables the scheduler to always pick the first thread that has the higher priority to be on the running state,
+instead of iterating on the whole list to find the thread with maximum priority. Which somehow makes the scheduling faster.
+ 
+Similarly in priority donation, It is a simple implementation. Each lock has a list of waiters, max_priority.
+The list is sorted in decreasing order by the priority of the threads. So the first thread on the list will always be
+the first one that can acquire the lock (has the higher priority).
+The max _priority refers to the higher priority of the threads seeking to hold this lock.
+So Each thread has a list of locks which are held by him, and this list is sorted in decreasing order by max_priority
+of the locks, as we always can pick the first entry as the highest lock priority, which can donate its priority to the holder thread. And so on.
+So we needn’t loop over any list, just pick the first entry and do some proper actions.
+
+
+
+
+
+          	
+			ADVANCED SCHEDULER
+			==================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+1-In the “struct thread” addition main variable to calculate the priority of each thread by specific equation this variable are:
+ -“int nice “ , used to calculate the equations of ( Priority , Recent CPU)
+   Is initialized with zero until “thread_set_nice () is called “.
+ -struct real recent_cpu  , used to calculate the equations of ( Priority , Recent CPU) the struct real meaning
+  that the variable “ recent_cpu” is real representation number .
+2-Addition “ struct real load_avg “ as global variable in the ”thread.h” ,   used to calculate the equations of ( Load average , Recent CPU)  . 
+
+
+                    
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+
+timer  recent_cpu	priority   thread
+ticks   A   B   C     A   B   C   to run
+-----  --  --  --  --     --  --   ------
+ 0      0    0    0    63 61 59      A
+ 4      4    0    0    62 61 59      A
+ 8      8    0    0    61 61 59      A
+12      12   0    0    60 61 59      B
+16      12   4    0    60 60 59      B
+20      12   8    0    60 59 59      A
+24      16   8    0    59 59 59      A
+28      20   8    0    58 59 59      C
+32      20   8    4    58 59 58      B
+36      20  12    4    58 58 58      B
+
+
+
+   
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+
+1-Yes, found ambiguities in the scheduler specification make values in the table uncertain:
+ -Not mention which to be updated firstly the priority or recent_cpu .
+  But as the priority depends on the recent_cpu in its calculations we assume that the recent_cpu is updated firstly .
+ -Not mentioned if it's required to do thread_yield to the current thread when updating the priority “ not tested in the tests “ .
+      .
+          
+2-Yes, by updating the reent_cpu firstly and ignoring to do thread_yield 
+this matches the behaviour of our scheduler.
+
+
+
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+
+To affect performance the load_avg of the system which expresses the number of ready threads
+the last minute, the recent_cpu of the threads which expresses how much time did this thread spend on the cpu recently
+and the priority of the threads all of them should be updated either inside or outside the interrupt.
+
+Inside the interrupt :
+ 1. Every tick recent_cpu of the current_thread is incremented by one .
+ 2. Every 4 ticks the priority of the current_thread is calculated using its recent_cpu & nice values using “ update_priority() ” .
+ 3. Every TIME_FREQ “ one second “ calling “update_every_second() “
+    -The load_avg is calculated for the system using the old value and the size of the ready list plus the current_thread using “ update_load_avg()” .
+    -The recent_cpu is calculated for all threads in all_list using the load_avg of the system, old value of recent_cpu
+     and nice value of the thread  using “ thread_for_each (update_recent_cpu()) “ .
+    -The priority is calculated for all threads in all_list using the recent_cpu and nice values of each thread .
+
+
+Outside the interrupt :
+1- when the “thread_set_nice() “ function is called the nice value is changed
+   so “update_recent_cpu() “ and “ update_priority() “ for the current_thread .
+2- As we insert in the ready_list in “ thread_yield “ in order using “compare_priority“
+   using greater than only not equal to apply the round robin .
+
+
+
+
+---- RATIONALE ----
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design
+
+1. The advantages in our design choices :
+   -It makes the priority depend on how much time the cpu spends on the cpu “recent_cpu “ and automatically it depends on
+    the number of ready_list in the thread system “ load_avg “ so it avoids starvation .
+   -By inserting by order of priority in a queue and using round robin avoids using 64 queues for each priority .
+   -Ability of increasing priority by setting a lower nice value .
+
+2. The disadvantages in our design choices :
+   Ignoring the thread_yield calling after updating the priority as cannot be sure where to call as the tests does not check it .
+		
+
+
+
+
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+
+-We decided to implement the fixed point  math in a separated file which is named “fix-point.c”
+ with the header file “fix-point.h “ .
+-These files are located in the thread directory .
+-To run these files the “Makefile.build” is updated which is located in
+ “$PINTOSHOME/src/Makefile.build” by adding the name of the file “fix-point.c” .
+-The implementation basically depends on “struct real” which contains “int val” which represents
+ the number as fixed point representation “ fraction “.
+-Define global variable “Delta” which shifts one left by 16  “(1<<16)”.
+-Use this delta to convert the number from int to real and same as in vice versa by multiplication or division . 
+-The function which is implemented in “fix-point” ,It depends on the most commonly used processes to calculate
+ the three equation to calculate the priority ,load_avg and recent_cpu in the Advanced schedule “ MLFQS “ .
+
+
+
+
+
+
+
+
+
+
+
+           	SURVEY QUESTIONS
+           	================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+	Not easy, Not hard .
+	The part which takes the most amount of time was the priority scheduling “donation “
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+	It makes our hands dirty with implementation of OS, 
+	how the threads are created ,synchronization between them, 
+	mechanism of interrupt handler in the system,
+ 	how to sleep threads avoiding busy waiting, 
+	and to be aware of the advanced scheduler and its calculations.
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+
+
+
